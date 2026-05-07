@@ -30,7 +30,7 @@ VENTANA_HORAS = 48
 
 # Pausa entre requests al API (segundos). Tier gratis Gemini = 5 req/min,
 # así que 13s entre requests da margen de seguridad.
-PAUSA_ENTRE_REQUESTS = 13
+PAUSA_ENTRE_REQUESTS = 30
 
 # Email
 DESTINATARIOS = [
