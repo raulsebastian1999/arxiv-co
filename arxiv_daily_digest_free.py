@@ -1,13 +1,13 @@
 """
-arxiv_daily_digest_v2.py — Digest diario de arXiv math.CO, mejorado
+arxiv_daily_digest_v3.py — Digest diario de arXiv math.CO
 
-Cambios respecto a v1:
-  - Ventana configurable (24h, 48h, 72h) para no perder los lunes después
-    del fin de semana.
-  - Dos niveles de relevancia: alta (autores + keywords específicas) y
-    media (keywords genéricas).
-  - Tres secciones en el email: alta relevancia, media relevancia, y
-    también hoy en math.CO (todo, sin filtro).
+Cambios respecto a v2:
+  - Solo se resumen los papers de ALTA relevancia.
+  - Los de relevancia media: solo título + link (sin resumen).
+  - Manejo robusto de errores: nunca se imprime el error en el email.
+    Si Gemini falla, se usa silenciosamente el abstract original recortado.
+  - Pausa entre requests para respetar rate limit del tier gratis (5/min).
+  - Sin sección de "extras" (era ruido).
 """
 
 import os
@@ -15,6 +15,7 @@ import re
 import smtplib
 import ssl
 import sys
+import time
 from datetime import datetime, timezone, timedelta
 from email.message import EmailMessage
 
@@ -25,31 +26,24 @@ import feedparser
 # ============================================================
 
 RESUMEN_MODE = "gemini"  # "none", "gemini", o "groq"
-
-# Cuántas horas atrás considerar como "reciente"
-# 24 = solo hoy (UTC)
-# 48 = últimas 48 horas (recomendado para no perder ayer)
-# 72 = últimas 72 horas (útil para los lunes)
 VENTANA_HORAS = 48
 
-# Cuántos papers extra mostrar en la sección "También hoy en math.CO"
-# (de los que no matchearon filtros, los más recientes)
-EXTRA_PAPERS = 10
+# Pausa entre requests al API (segundos). Tier gratis Gemini = 5 req/min,
+# así que 13s entre requests da margen de seguridad.
+PAUSA_ENTRE_REQUESTS = 13
 
-# --- Email ---
+# Email
 DESTINATARIOS = [
-    # "arxiv-co@googlegroups.com",  # CAMBIAR por tu Google Group
-  "raulsebastian1999@gmail.com",
-  "constanza.gacitua.f@gmail.com"
+    "arxiv-co@googlegroups.com",  # CAMBIAR por tu Google Group
 ]
 REMITENTE = os.environ.get("GMAIL_USER", "")
 APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
 
-# --- APIs ---
+# APIs
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
-# --- Intereses: nivel ALTO (matchea por autor o keyword específica) ---
+# Intereses: nivel ALTO (autores + keywords muy específicas)
 AUTORES = [
     "Maya Stein",
     "Matias Pavez-Signe", "Matias Pavez-Signé",
@@ -59,7 +53,6 @@ AUTORES = [
 ]
 
 KEYWORDS_ALTAS = [
-    # Específicas: si aparecen, casi seguro es relevante
     "Ramsey", "Turán", "Turan",
     "monochromatic", "chromatic number", "edge coloring", "edge colouring",
     "tree cover", "tree partition", "biclique cover",
@@ -71,15 +64,16 @@ KEYWORDS_ALTAS = [
     "saturation", "anti-Ramsey",
 ]
 
-# --- Intereses: nivel MEDIO (keywords genéricas, área general) ---
+# Intereses: nivel MEDIO (keywords genéricas — solo título + link en email)
 KEYWORDS_MEDIAS = [
-    "graph", "graphs", "hypergraph", "hypergraphs",
+    "hypergraph", "hypergraphs",
     "bipartite", "tripartite",
     "combinatorial", "combinatorics",
     "extremal", "probabilistic",
-    "coloring", "colouring", "partition",
-    "limit", "convergence",
+    "coloring", "colouring",
+    "graphon",
 ]
+# Nota: saqué "graph" y "graphs" porque matchean casi todo math.CO.
 
 ARXIV_CATEGORY = "math.CO"
 MAX_RESULTS = 200
@@ -100,32 +94,24 @@ def fetch_recent_papers():
 
 
 def is_in_window(entry, hours):
-    """¿El paper fue publicado en las últimas `hours` horas?"""
     pub_date = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     return pub_date >= cutoff
 
 
 def classify_paper(entry):
-    """Clasifica un paper como 'alta', 'media' o 'baja' relevancia.
-    Devuelve (nivel, razones)."""
     text = f"{entry.title} {entry.summary}".lower()
     authors_str = ", ".join(a.name for a in entry.authors).lower()
+    razones_altas, razones_medias = [], []
     
-    razones_altas = []
-    razones_medias = []
-    
-    # Autores
     for autor in AUTORES:
         if autor.lower() in authors_str:
             razones_altas.append(f"autor: {autor}")
     
-    # Keywords altas
     for kw in KEYWORDS_ALTAS:
         if re.search(r"\b" + re.escape(kw.lower()) + r"\b", text):
             razones_altas.append(f"keyword: {kw}")
     
-    # Keywords medias
     for kw in KEYWORDS_MEDIAS:
         if re.search(r"\b" + re.escape(kw.lower()) + r"\b", text):
             razones_medias.append(f"keyword: {kw}")
@@ -143,12 +129,14 @@ def truncate_words(text, max_words=50):
     return " ".join(words[:max_words]) + ("..." if len(words) > max_words else "")
 
 
-def summary_none(title, abstract):
+def summary_fallback(abstract):
+    """Fallback silencioso: abstract original recortado a 50 palabras."""
     cleaned = re.sub(r"\s+", " ", abstract).strip()
     return truncate_words(cleaned, 50)
 
 
 def summary_gemini(title, abstract):
+    """Intenta resumir con Gemini. Si falla, devuelve fallback (sin imprimir error)."""
     try:
         import google.generativeai as genai
         genai.configure(api_key=GEMINI_API_KEY)
@@ -163,7 +151,9 @@ def summary_gemini(title, abstract):
         response = model.generate_content(prompt)
         return response.text.strip()
     except Exception as e:
-        return f"[Error Gemini: {e}] Original: {truncate_words(abstract, 40)}"
+        # Silencioso: log a stdout pero NO al email
+        print(f"   (Gemini error, usando fallback: {type(e).__name__})")
+        return summary_fallback(abstract)
 
 
 def summary_groq(title, abstract):
@@ -171,8 +161,8 @@ def summary_groq(title, abstract):
         from groq import Groq
         client = Groq(api_key=GROQ_API_KEY)
         prompt = (
-            f"Resumí el siguiente paper de matemática en español, máximo 50 palabras. "
-            f"NO inventes nada.\n\nTítulo: {title}\n\nAbstract:\n{abstract}"
+            f"Resumí en español, máximo 50 palabras. NO inventes nada.\n\n"
+            f"Título: {title}\n\nAbstract:\n{abstract}"
         )
         resp = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -181,7 +171,8 @@ def summary_groq(title, abstract):
         )
         return resp.choices[0].message.content.strip()
     except Exception as e:
-        return f"[Error Groq: {e}] Original: {truncate_words(abstract, 40)}"
+        print(f"   (Groq error, usando fallback: {type(e).__name__})")
+        return summary_fallback(abstract)
 
 
 def generate_summary(title, abstract):
@@ -190,10 +181,10 @@ def generate_summary(title, abstract):
     elif RESUMEN_MODE == "groq":
         return summary_groq(title, abstract)
     else:
-        return summary_none(title, abstract)
+        return summary_fallback(abstract)
 
 
-def format_paper_block(paper, razones, summary, include_full=True):
+def format_alta(paper, razones, summary):
     title = paper.title.replace("\n", " ").strip()
     authors = ", ".join(a.name for a in paper.authors)
     arxiv_id = paper.id.split("/abs/")[-1]
@@ -201,61 +192,49 @@ def format_paper_block(paper, razones, summary, include_full=True):
     pub_date = datetime(*paper.published_parsed[:6], tzinfo=timezone.utc)
     pub_str = pub_date.strftime("%Y-%m-%d")
     
-    lines = [
+    return "\n".join([
         f"📄 {title}",
-        f"   Autores: {authors}",
-        f"   arXiv: {arxiv_id}  ({pub_str})",
-        f"   Link: {link}",
-    ]
-    if razones:
-        lines.append(f"   Coincide por: {', '.join(razones[:3])}")
-    if include_full and summary:
-        lines.append(f"")
-        lines.append(f"   Resumen: {summary}")
-    lines.append("")
-    return "\n".join(lines)
+        f"   {authors}",
+        f"   arXiv:{arxiv_id} ({pub_str}) — {link}",
+        f"   Match: {', '.join(razones[:3])}",
+        f"",
+        f"   {summary}",
+        f"",
+    ])
 
 
-def format_email(altas, medias, extras, ventana):
+def format_media(paper, razones):
+    """Solo título + link, compacto."""
+    title = paper.title.replace("\n", " ").strip()
+    arxiv_id = paper.id.split("/abs/")[-1]
+    link = paper.link
+    return f"• {title}\n  arXiv:{arxiv_id} — {link}\n"
+
+
+def format_email(altas, medias, ventana):
     today_str = datetime.now().strftime("%Y-%m-%d")
-    
     lines = [
-        f"📚 Reporte arXiv math.CO — {today_str}",
-        f"Ventana: últimas {ventana} horas",
-        f"Modo de resumen: {RESUMEN_MODE}",
+        f"📚 arXiv math.CO — {today_str}  ({ventana}h)",
         "=" * 70,
         "",
     ]
     
-    if not altas and not medias and not extras:
-        lines.append("No hay papers en math.CO para esta ventana.")
+    if not altas and not medias:
+        lines.append("Sin papers nuevos de interés en esta ventana.")
         return "\n".join(lines)
     
-    # ALTA RELEVANCIA — con resumen completo
     if altas:
-        lines.append(f"🟢 ALTA RELEVANCIA ({len(altas)} papers)")
+        lines.append(f"🟢 ALTA RELEVANCIA ({len(altas)})")
         lines.append("-" * 70)
         lines.append("")
         for paper, razones, summary in altas:
-            lines.append(format_paper_block(paper, razones, summary, include_full=True))
-        lines.append("")
+            lines.append(format_alta(paper, razones, summary))
     
-    # MEDIA RELEVANCIA — con resumen completo
     if medias:
-        lines.append(f"🟡 RELEVANCIA MEDIA ({len(medias)} papers)")
+        lines.append(f"🟡 OTROS POSIBLEMENTE RELEVANTES ({len(medias)})")
         lines.append("-" * 70)
-        lines.append("")
-        for paper, razones, summary in medias:
-            lines.append(format_paper_block(paper, razones, summary, include_full=True))
-        lines.append("")
-    
-    # EXTRAS — sin resumen, solo título y link
-    if extras:
-        lines.append(f"⚪ TAMBIÉN EN math.CO ({len(extras)} papers, sin resumir)")
-        lines.append("-" * 70)
-        lines.append("")
-        for paper in extras:
-            lines.append(format_paper_block(paper, [], None, include_full=False))
+        for paper, razones in medias:
+            lines.append(format_media(paper, razones))
         lines.append("")
     
     return "\n".join(lines)
@@ -275,51 +254,37 @@ def send_email(subject, body, destinatarios):
 
 
 def main():
-    print(f"🔍 Buscando papers en arXiv {ARXIV_CATEGORY}...")
-    print(f"   Ventana: últimas {VENTANA_HORAS}h. Modo: {RESUMEN_MODE}")
+    print(f"🔍 arXiv {ARXIV_CATEGORY}, ventana {VENTANA_HORAS}h, modo {RESUMEN_MODE}")
     
     entries = fetch_recent_papers()
-    print(f"   Recibidos: {len(entries)} papers desde la API.")
-    
-    # Filtrar por ventana
     recientes = [e for e in entries if is_in_window(e, VENTANA_HORAS)]
-    print(f"   En la ventana de {VENTANA_HORAS}h: {len(recientes)}")
+    print(f"   Recibidos: {len(entries)} | En ventana: {len(recientes)}")
     
-    # Clasificar
-    altas_raw, medias_raw, bajas_raw = [], [], []
+    altas_raw, medias_raw = [], []
     for entry in recientes:
         nivel, razones = classify_paper(entry)
         if nivel == "alta":
             altas_raw.append((entry, razones))
         elif nivel == "media":
             medias_raw.append((entry, razones))
-        else:
-            bajas_raw.append(entry)
     
-    print(f"   Alta: {len(altas_raw)} | Media: {len(medias_raw)} | Baja: {len(bajas_raw)}")
+    print(f"   Alta: {len(altas_raw)} | Media: {len(medias_raw)}")
     
-    # Generar resúmenes para alta y media
-    print(f"📝 Generando resúmenes...")
+    # Solo resumir alta relevancia, con pausa entre requests
     altas = []
     for i, (entry, razones) in enumerate(altas_raw, 1):
-        print(f"   [alta {i}/{len(altas_raw)}] {entry.title[:50]}...")
+        print(f"   [{i}/{len(altas_raw)}] {entry.title[:55]}...")
         summary = generate_summary(entry.title, entry.summary)
         altas.append((entry, razones, summary))
+        # Pausa entre requests para respetar rate limit (excepto en el último)
+        if i < len(altas_raw) and RESUMEN_MODE in ("gemini", "groq"):
+            time.sleep(PAUSA_ENTRE_REQUESTS)
     
-    medias = []
-    for i, (entry, razones) in enumerate(medias_raw, 1):
-        print(f"   [media {i}/{len(medias_raw)}] {entry.title[:50]}...")
-        summary = generate_summary(entry.title, entry.summary)
-        medias.append((entry, razones, summary))
-    
-    # Extras: los más recientes que no clasificaron, sin resumen
-    extras = bajas_raw[:EXTRA_PAPERS]
-    
-    # Armar y mandar
-    body = format_email(altas, medias, extras, VENTANA_HORAS)
+    body = format_email(altas, medias_raw, VENTANA_HORAS)
     today_str = datetime.now().strftime("%Y-%m-%d")
-    n_total = len(altas) + len(medias) + len(extras)
-    subject = f"[arXiv math.CO] {n_total} papers — {today_str}"
+    n_alta = len(altas)
+    n_media = len(medias_raw)
+    subject = f"[arXiv math.CO {today_str}] {n_alta} alta + {n_media} otros"
     
     if "--dry-run" in sys.argv:
         print("\n--- DRY RUN ---\n")
