@@ -152,7 +152,7 @@ def summary_gemini(title, abstract):
     try:
         import google.generativeai as genai
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-2.0-flash-exp")
+        model = genai.GenerativeModel("gemini-2.5-flash")
         prompt = (
             f"Resumí el siguiente paper de matemática en español, máximo 50 palabras. "
             f"Sé concreto: enunciá el problema, el resultado principal y la técnica. "
