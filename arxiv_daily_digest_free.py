@@ -52,6 +52,8 @@ AUTORES = [
     "Marcos Kiwi",
     "Hiep Han", "Hiep Hàn",
     "Nicolas Sanhueza-Matamala", "Nicolás Sanhueza-Matamala",
+  "Jan Hladký, "Jan Hladky",
+  "Frederik Garbe"
 ]
 
 KEYWORDS_ALTAS = [
@@ -63,7 +65,9 @@ KEYWORDS_ALTAS = [
     "extremal graph", "extremal hypergraph",
     "random graph threshold", "random hypergraph",
     "spanning subgraph", "Hamilton cycle", "Hamiltonian",
-    "saturation", "anti-Ramsey",
+    "saturation", "anti-Ramsey","graphon", "random graph", "graph limit","quasirandom permutation",
+    "quasirandom graph", "quasirandom words",
+    "word limit",
 ]
 
 # Intereses: nivel MEDIO (keywords genéricas — solo título + link en email)
@@ -73,7 +77,7 @@ KEYWORDS_MEDIAS = [
     "combinatorial", "combinatorics",
     "extremal", "probabilistic",
     "coloring", "colouring",
-    "graphon",
+    
 ]
 # Nota: saqué "graph" y "graphs" porque matchean casi todo math.CO.
 
