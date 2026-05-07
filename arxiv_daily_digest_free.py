@@ -36,10 +36,10 @@ RESUMEN_MODE = "gemini"
 # --- Email ---
 DESTINATARIOS = [
     # Si tenés Google Group, usá solo eso:
-    "tu-grupo@googlegroups.com",
+    # "tu-grupo@googlegroups.com",
     # O emails individuales:
-    # "raulsebastian1999@gmail.com",
-    # "constanza.gacitua.f@gmail.com",
+    "raulsebastian1999@gmail.com",
+    "constanza.gacitua.f@gmail.com",
 ]
 
 REMITENTE = os.environ.get("GMAIL_USER", "tu_email@gmail.com")
