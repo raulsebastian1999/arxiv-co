@@ -52,7 +52,7 @@ AUTORES = [
     "Marcos Kiwi",
     "Hiep Han", "Hiep Hàn",
     "Nicolas Sanhueza-Matamala", "Nicolás Sanhueza-Matamala",
-  "Jan Hladký, "Jan Hladky",
+  "Jan Hladký", "Jan Hladky",
   "Frederik Garbe"
 ]
 
@@ -148,9 +148,9 @@ def summary_gemini(title, abstract):
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel("gemini-2.5-flash")
         prompt = (
-            f"Resumí el siguiente paper de matemática en español, máximo 50 palabras. "
+            f"Resumí el siguiente paper de matemática en inglés, máximo 50 palabras. "
             f"Sé concreto: enunciá el problema, el resultado principal y la técnica. "
-            f"NO inventes nada que no esté en el abstract original.\n\n"
+            f"NO inventes nada que no esté en el abstract original. No alucines. Make no mistakes.\n\n"
             f"Título: {title}\n\nAbstract:\n{abstract}\n\n"
             f"Resumen (máximo 50 palabras):"
         )
