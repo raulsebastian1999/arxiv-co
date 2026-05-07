@@ -34,7 +34,9 @@ PAUSA_ENTRE_REQUESTS = 13
 
 # Email
 DESTINATARIOS = [
-    "arxiv-co@googlegroups.com",  # CAMBIAR por tu Google Group
+    # "arxiv-co@googlegroups.com",  # CAMBIAR por tu Google Group
+  "raulsebastian1999@gmail.com",
+  "constanza.gacitua.f@gmail.com"
 ]
 REMITENTE = os.environ.get("GMAIL_USER", "")
 APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
